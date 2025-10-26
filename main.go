@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
 	"gopkg.in/yaml.v3"
 )
 
-// validationError: line == 0 => это "is required" (без line в выводе)
+// validationError: line == 0 => вывод без ":<line>"
 type validationError struct {
 	filename string
 	line     int
@@ -28,9 +30,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: yamlvalidator <file>")
 		os.Exit(1)
 	}
-	file := os.Args[1]
+	fullPath := os.Args[1]
+	displayName := filepath.Base(fullPath)
 
-	data, err := os.ReadFile(file)
+	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		log.Printf("cannot read file content: %v", err)
 		os.Exit(1)
@@ -41,6 +44,7 @@ func main() {
 		log.Printf("cannot unmarshal file content: %v", err)
 		os.Exit(1)
 	}
+
 	if len(root.Content) == 0 {
 		log.Printf("empty YAML")
 		os.Exit(1)
@@ -48,7 +52,7 @@ func main() {
 	doc := root.Content[0]
 
 	var errs []validationError
-	validatePod(file, doc, &errs)
+	validatePod(displayName, doc, &errs)
 
 	if len(errs) > 0 {
 		for _, e := range errs {
@@ -56,12 +60,13 @@ func main() {
 		}
 		os.Exit(1)
 	}
+
 	os.Exit(0)
 }
 
-// === helpers ===
+// ---------------- helpers ----------------
 
-func getField(obj *yaml.Node, name string) (val *yaml.Node, ok bool) {
+func getField(obj *yaml.Node, name string) (*yaml.Node, bool) {
 	if obj == nil || obj.Kind != yaml.MappingNode {
 		return nil, false
 	}
@@ -75,6 +80,7 @@ func getField(obj *yaml.Node, name string) (val *yaml.Node, ok bool) {
 	return nil, false
 }
 
+// integer utils
 func isIntString(s string) bool {
 	if s == "" {
 		return false
@@ -93,11 +99,11 @@ func isIntString(s string) bool {
 	return true
 }
 
-func asInt(s string) (int64, bool) {
+func parseInt(s string) (int64, bool) {
 	if !isIntString(s) {
 		return 0, false
 	}
-	var neg bool
+	neg := false
 	if s[0] == '-' {
 		neg = true
 		s = s[1:]
@@ -112,64 +118,6 @@ func asInt(s string) (int64, bool) {
 	return n, true
 }
 
-// type checks with proper error reporting
-
-func expectScalarString(file, fieldName string, n *yaml.Node, errs *[]validationError) bool {
-	if n == nil || n.Kind != yaml.ScalarNode {
-		*errs = append(*errs, validationError{
-			filename: file,
-			line:     safeLine(n),
-			msg:      fmt.Sprintf("%s must be string", fieldName),
-		})
-		return false
-	}
-	return true
-}
-
-func expectScalarInt(file, fieldName string, n *yaml.Node, errs *[]validationError) (ok bool) {
-	if n == nil || n.Kind != yaml.ScalarNode {
-		*errs = append(*errs, validationError{
-			filename: file,
-			line:     safeLine(n),
-			msg:      fmt.Sprintf("%s must be int", fieldName),
-		})
-		return false
-	}
-	if n.Tag != "!!int" && !isIntString(n.Value) {
-		*errs = append(*errs, validationError{
-			filename: file,
-			line:     n.Line,
-			msg:      fmt.Sprintf("%s must be int", fieldName),
-		})
-		return false
-	}
-	return true
-}
-
-func expectMapping(file, fieldName string, n *yaml.Node, errs *[]validationError) bool {
-	if n == nil || n.Kind != yaml.MappingNode {
-		*errs = append(*errs, validationError{
-			filename: file,
-			line:     safeLine(n),
-			msg:      fmt.Sprintf("%s must be object", fieldName),
-		})
-		return false
-	}
-	return true
-}
-
-func expectSequence(file, fieldName string, n *yaml.Node, errs *[]validationError) bool {
-	if n == nil || n.Kind != yaml.SequenceNode {
-		*errs = append(*errs, validationError{
-			filename: file,
-			line:     safeLine(n),
-			msg:      fmt.Sprintf("%s must be array", fieldName),
-		})
-		return false
-	}
-	return true
-}
-
 func safeLine(n *yaml.Node) int {
 	if n == nil {
 		return 0
@@ -177,7 +125,65 @@ func safeLine(n *yaml.Node) int {
 	return n.Line
 }
 
-// === validators ===
+// typed expectations with canonical field names
+
+func expectScalarString(file, field string, n *yaml.Node, errs *[]validationError) bool {
+	if n == nil || n.Kind != yaml.ScalarNode {
+		*errs = append(*errs, validationError{
+			filename: file,
+			line:     safeLine(n),
+			msg:      fmt.Sprintf("%s must be string", field),
+		})
+		return false
+	}
+	return true
+}
+
+func expectScalarInt(file, field string, n *yaml.Node, errs *[]validationError) bool {
+	if n == nil || n.Kind != yaml.ScalarNode {
+		*errs = append(*errs, validationError{
+			filename: file,
+			line:     safeLine(n),
+			msg:      fmt.Sprintf("%s must be int", field),
+		})
+		return false
+	}
+	if n.Tag != "!!int" && !isIntString(n.Value) {
+		*errs = append(*errs, validationError{
+			filename: file,
+			line:     n.Line,
+			msg:      fmt.Sprintf("%s must be int", field),
+		})
+		return false
+	}
+	return true
+}
+
+func expectMapping(file, field string, n *yaml.Node, errs *[]validationError) bool {
+	if n == nil || n.Kind != yaml.MappingNode {
+		*errs = append(*errs, validationError{
+			filename: file,
+			line:     safeLine(n),
+			msg:      fmt.Sprintf("%s must be object", field),
+		})
+		return false
+	}
+	return true
+}
+
+func expectSequence(file, field string, n *yaml.Node, errs *[]validationError) bool {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		*errs = append(*errs, validationError{
+			filename: file,
+			line:     safeLine(n),
+			msg:      fmt.Sprintf("%s must be array", field),
+		})
+		return false
+	}
+	return true
+}
+
+// ---------------- validators ----------------
 
 func validatePod(file string, pod *yaml.Node, errs *[]validationError) {
 	if pod.Kind != yaml.MappingNode {
@@ -189,7 +195,7 @@ func validatePod(file string, pod *yaml.Node, errs *[]validationError) {
 		return
 	}
 
-	// apiVersion (required: string == "v1")
+	// apiVersion (required string == "v1")
 	apiVersion, ok := getField(pod, "apiVersion")
 	if !ok {
 		*errs = append(*errs, validationError{file, 0, "apiVersion is required"})
@@ -203,7 +209,7 @@ func validatePod(file string, pod *yaml.Node, errs *[]validationError) {
 		}
 	}
 
-	// kind (required: string == "Pod")
+	// kind (required string == "Pod")
 	kind, ok := getField(pod, "kind")
 	if !ok {
 		*errs = append(*errs, validationError{file, 0, "kind is required"})
@@ -235,129 +241,143 @@ func validatePod(file string, pod *yaml.Node, errs *[]validationError) {
 }
 
 func validateMetadata(file string, meta *yaml.Node, errs *[]validationError) {
-	// metadata.name (required string)
+	// name (required non-empty string)
 	name, ok := getField(meta, "name")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, "metadata.name is required"})
-	} else {
-		expectScalarString(file, "metadata.name", name, errs)
+		*errs = append(*errs, validationError{file, 0, "name is required"})
+	} else if expectScalarString(file, "name", name, errs) {
+		if strings.TrimSpace(name.Value) == "" {
+			// пустая строка => тоже "name is required", но уже с линией
+			*errs = append(*errs, validationError{
+				filename: file,
+				line:     name.Line,
+				msg:      "name is required",
+			})
+		}
 	}
 
-	// metadata.namespace (optional string)
+	// namespace (optional string)
 	if ns, ok := getField(meta, "namespace"); ok {
-		expectScalarString(file, "metadata.namespace", ns, errs)
+		expectScalarString(file, "namespace", ns, errs)
 	}
 
-	// metadata.labels (optional object<string,string>)
+	// labels (optional: object<string,string>)
 	if labels, ok := getField(meta, "labels"); ok {
-		if expectMapping(file, "metadata.labels", labels, errs) {
+		if expectMapping(file, "labels", labels, errs) {
 			for i := 0; i < len(labels.Content); i += 2 {
 				k := labels.Content[i]
 				v := labels.Content[i+1]
-				expectScalarString(file, "metadata.labels", k, errs)
-				expectScalarString(file, "metadata.labels", v, errs)
+				expectScalarString(file, "labels", k, errs)
+				expectScalarString(file, "labels", v, errs)
 			}
 		}
 	}
 }
 
 func validateSpec(file string, spec *yaml.Node, errs *[]validationError) {
-	// spec.os (optional string: linux|windows)
+	// os (optional string in {linux,windows})
 	if osNode, ok := getField(spec, "os"); ok {
-		if expectScalarString(file, "spec.os", osNode, errs) {
+		if expectScalarString(file, "os", osNode, errs) {
 			if osNode.Value != "linux" && osNode.Value != "windows" {
 				*errs = append(*errs, validationError{
 					filename: file,
 					line:     osNode.Line,
-					msg:      fmt.Sprintf("spec.os has unsupported value '%s'", osNode.Value),
+					msg:      fmt.Sprintf("os has unsupported value '%s'", osNode.Value),
 				})
 			}
 		}
 	}
 
-	// spec.containers (required array of objects)
+	// containers (required array of objects)
 	containers, ok := getField(spec, "containers")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, "spec.containers is required"})
+		*errs = append(*errs, validationError{file, 0, "containers is required"})
 		return
 	}
-	if !expectSequence(file, "spec.containers", containers, errs) {
+	if !expectSequence(file, "containers", containers, errs) {
 		return
 	}
-	for _, item := range containers.Content {
-		if item.Kind != yaml.MappingNode {
+
+	for _, c := range containers.Content {
+		if c.Kind != yaml.MappingNode {
 			*errs = append(*errs, validationError{
 				filename: file,
-				line:     item.Line,
-				msg:      "spec.containers must be array of objects",
+				line:     c.Line,
+				msg:      "containers must be array of objects",
 			})
 			continue
 		}
-		validateContainer(file, item, errs)
+		validateContainer(file, c, errs)
 	}
 }
 
 var (
-	reSnake   = regexp.MustCompile(`^[a-z0-9]+(?:_[a-z0-9]+)*$`)
-	reImage   = regexp.MustCompile(`^registry\.bigbrother\.io/[^:]+:.+$`)
-	reMemory  = regexp.MustCompile(`^[0-9]+(?:Gi|Mi|Ki)$`)
+	reSnake  = regexp.MustCompile(`^[a-z0-9]+(?:_[a-z0-9]+)*$`)
+	reImage  = regexp.MustCompile(`^registry\.bigbrother\.io/[^:]+:.+$`)
+	reMemory = regexp.MustCompile(`^[0-9]+(?:Gi|Mi|Ki)$`)
 )
 
 func validateContainer(file string, c *yaml.Node, errs *[]validationError) {
-	// name (required, snake_case)
-	name, ok := getField(c, "name")
+	// name (required snake_case)
+	nameNode, ok := getField(c, "name")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, "spec.containers.name is required"})
-	} else if expectScalarString(file, "spec.containers.name", name, errs) {
-		if !reSnake.MatchString(name.Value) {
+		*errs = append(*errs, validationError{file, 0, "name is required"})
+	} else if expectScalarString(file, "name", nameNode, errs) {
+		if strings.TrimSpace(nameNode.Value) == "" {
 			*errs = append(*errs, validationError{
 				filename: file,
-				line:     name.Line,
-				msg:      fmt.Sprintf("spec.containers.name has invalid format '%s'", name.Value),
+				line:     nameNode.Line,
+				msg:      "name is required",
+			})
+		} else if !reSnake.MatchString(nameNode.Value) {
+			*errs = append(*errs, validationError{
+				filename: file,
+				line:     nameNode.Line,
+				msg:      fmt.Sprintf("name has invalid format '%s'", nameNode.Value),
 			})
 		}
 	}
 
-	// image (required, registry.bigbrother.io/...:<tag>)
-	img, ok := getField(c, "image")
+	// image (required registry.bigbrother.io/...:<tag>)
+	imageNode, ok := getField(c, "image")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, "spec.containers.image is required"})
-	} else if expectScalarString(file, "spec.containers.image", img, errs) {
-		if !reImage.MatchString(img.Value) {
+		*errs = append(*errs, validationError{file, 0, "image is required"})
+	} else if expectScalarString(file, "image", imageNode, errs) {
+		if !reImage.MatchString(imageNode.Value) {
 			*errs = append(*errs, validationError{
 				filename: file,
-				line:     img.Line,
-				msg:      fmt.Sprintf("spec.containers.image has invalid format '%s'", img.Value),
+				line:     imageNode.Line,
+				msg:      fmt.Sprintf("image has invalid format '%s'", imageNode.Value),
 			})
 		}
 	}
 
 	// ports (optional)
-	if ports, ok := getField(c, "ports"); ok {
-		validatePorts(file, ports, errs)
+	if portsNode, ok := getField(c, "ports"); ok {
+		validatePorts(file, portsNode, errs)
 	}
 
 	// readinessProbe (optional)
-	if rp, ok := getField(c, "readinessProbe"); ok {
-		validateProbe(file, "spec.containers.readinessProbe", rp, errs)
+	if rpNode, ok := getField(c, "readinessProbe"); ok {
+		validateProbe(file, rpNode, errs)
 	}
 
 	// livenessProbe (optional)
-	if lp, ok := getField(c, "livenessProbe"); ok {
-		validateProbe(file, "spec.containers.livenessProbe", lp, errs)
+	if lpNode, ok := getField(c, "livenessProbe"); ok {
+		validateProbe(file, lpNode, errs)
 	}
 
 	// resources (required)
-	res, ok := getField(c, "resources")
+	resNode, ok := getField(c, "resources")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, "spec.containers.resources is required"})
-	} else if expectMapping(file, "spec.containers.resources", res, errs) {
-		validateResources(file, res, errs)
+		*errs = append(*errs, validationError{file, 0, "resources is required"})
+	} else if expectMapping(file, "resources", resNode, errs) {
+		validateResources(file, resNode, errs)
 	}
 }
 
 func validatePorts(file string, ports *yaml.Node, errs *[]validationError) {
-	if !expectSequence(file, "spec.containers.ports", ports, errs) {
+	if !expectSequence(file, "ports", ports, errs) {
 		return
 	}
 	for _, p := range ports.Content {
@@ -365,35 +385,35 @@ func validatePorts(file string, ports *yaml.Node, errs *[]validationError) {
 			*errs = append(*errs, validationError{
 				filename: file,
 				line:     p.Line,
-				msg:      "spec.containers.ports must be array of objects",
+				msg:      "ports must be array of objects",
 			})
 			continue
 		}
 
 		// containerPort (required int 1..65535)
-		cp, ok := getField(p, "containerPort")
+		cpNode, ok := getField(p, "containerPort")
 		if !ok {
-			*errs = append(*errs, validationError{file, 0, "spec.containers.ports.containerPort is required"})
-		} else if expectScalarInt(file, "spec.containers.ports.containerPort", cp, errs) {
-			if val, ok := asInt(cp.Value); ok {
+			*errs = append(*errs, validationError{file, 0, "containerPort is required"})
+		} else if expectScalarInt(file, "containerPort", cpNode, errs) {
+			if val, ok := parseInt(cpNode.Value); ok {
 				if val < 1 || val > 65535 {
 					*errs = append(*errs, validationError{
 						filename: file,
-						line:     cp.Line,
-						msg:      "spec.containers.ports.containerPort value out of range",
+						line:     cpNode.Line,
+						msg:      "containerPort value out of range",
 					})
 				}
 			}
 		}
 
 		// protocol (optional string TCP|UDP)
-		if proto, ok := getField(p, "protocol"); ok {
-			if expectScalarString(file, "spec.containers.ports.protocol", proto, errs) {
-				if proto.Value != "TCP" && proto.Value != "UDP" {
+		if protoNode, ok := getField(p, "protocol"); ok {
+			if expectScalarString(file, "protocol", protoNode, errs) {
+				if protoNode.Value != "TCP" && protoNode.Value != "UDP" {
 					*errs = append(*errs, validationError{
 						filename: file,
-						line:     proto.Line,
-						msg:      fmt.Sprintf("spec.containers.ports.protocol has unsupported value '%s'", proto.Value),
+						line:     protoNode.Line,
+						msg:      fmt.Sprintf("protocol has unsupported value '%s'", protoNode.Value),
 					})
 				}
 			}
@@ -401,44 +421,45 @@ func validatePorts(file string, ports *yaml.Node, errs *[]validationError) {
 	}
 }
 
-func validateProbe(file, prefix string, probe *yaml.Node, errs *[]validationError) {
-	if !expectMapping(file, prefix, probe, errs) {
+// probe: must have httpGet{path,port}
+func validateProbe(file string, probe *yaml.Node, errs *[]validationError) {
+	if !expectMapping(file, "probe", probe, errs) {
 		return
 	}
 	httpGet, ok := getField(probe, "httpGet")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, prefix + ".httpGet is required"})
+		*errs = append(*errs, validationError{file, 0, "httpGet is required"})
 		return
 	}
-	if !expectMapping(file, prefix+".httpGet", httpGet, errs) {
+	if !expectMapping(file, "httpGet", httpGet, errs) {
 		return
 	}
 
 	// path (required string, must start with "/")
-	path, ok := getField(httpGet, "path")
+	pathNode, ok := getField(httpGet, "path")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, prefix + ".httpGet.path is required"})
-	} else if expectScalarString(file, prefix+".httpGet.path", path, errs) {
-		if !strings.HasPrefix(path.Value, "/") {
+		*errs = append(*errs, validationError{file, 0, "path is required"})
+	} else if expectScalarString(file, "path", pathNode, errs) {
+		if !strings.HasPrefix(pathNode.Value, "/") {
 			*errs = append(*errs, validationError{
 				filename: file,
-				line:     path.Line,
-				msg:      fmt.Sprintf("%s.httpGet.path has invalid format '%s'", prefix, path.Value),
+				line:     pathNode.Line,
+				msg:      fmt.Sprintf("path has invalid format '%s'", pathNode.Value),
 			})
 		}
 	}
 
 	// port (required int 1..65535)
-	port, ok := getField(httpGet, "port")
+	portNode, ok := getField(httpGet, "port")
 	if !ok {
-		*errs = append(*errs, validationError{file, 0, prefix + ".httpGet.port is required"})
-	} else if expectScalarInt(file, prefix+".httpGet.port", port, errs) {
-		if val, ok := asInt(port.Value); ok {
+		*errs = append(*errs, validationError{file, 0, "port is required"})
+	} else if expectScalarInt(file, "port", portNode, errs) {
+		if val, ok := parseInt(portNode.Value); ok {
 			if val < 1 || val > 65535 {
 				*errs = append(*errs, validationError{
 					filename: file,
-					line:     port.Line,
-					msg:      prefix + ".httpGet.port value out of range",
+					line:     portNode.Line,
+					msg:      "port value out of range",
 				})
 			}
 		}
@@ -448,33 +469,36 @@ func validateProbe(file, prefix string, probe *yaml.Node, errs *[]validationErro
 func validateResources(file string, res *yaml.Node, errs *[]validationError) {
 	// limits (optional)
 	if limits, ok := getField(res, "limits"); ok {
-		validateResourceMap(file, "spec.containers.resources.limits", limits, errs)
+		validateResourceMap(file, limits, errs)
 	}
 	// requests (optional)
 	if req, ok := getField(res, "requests"); ok {
-		validateResourceMap(file, "spec.containers.resources.requests", req, errs)
+		validateResourceMap(file, req, errs)
 	}
 }
 
-func validateResourceMap(file, prefix string, m *yaml.Node, errs *[]validationError) {
-	if !expectMapping(file, prefix, m, errs) {
+// limits/requests: cpu(int), memory("123Mi" / "1Gi" / ...)
+func validateResourceMap(file string, m *yaml.Node, errs *[]validationError) {
+	if !expectMapping(file, "resources", m, errs) {
 		return
 	}
 
-	// cpu: int (optional)
-	if cpu, ok := getField(m, "cpu"); ok {
-		expectScalarInt(file, prefix+".cpu", cpu, errs)
+	// cpu must be int
+	if cpuNode, ok := getField(m, "cpu"); ok {
+		if !expectScalarInt(file, "cpu", cpuNode, errs) {
+			// ошибка уже добавлена
+		}
 	}
 
-	// memory: string like 500Mi, 1Gi ... (optional)
-	if mem, ok := getField(m, "memory"); ok {
-		if expectScalarString(file, prefix+".memory", mem, errs) {
-			memVal := strings.Trim(mem.Value, `"`)
+	// memory must match ^[0-9]+(Gi|Mi|Ki)$
+	if memNode, ok := getField(m, "memory"); ok {
+		if expectScalarString(file, "memory", memNode, errs) {
+			memVal := strings.Trim(memNode.Value, `"`)
 			if !reMemory.MatchString(memVal) {
 				*errs = append(*errs, validationError{
 					filename: file,
-					line:     mem.Line,
-					msg:      fmt.Sprintf("%s.memory has invalid format '%s'", prefix, mem.Value),
+					line:     memNode.Line,
+					msg:      fmt.Sprintf("memory has invalid format '%s'", memNode.Value),
 				})
 			}
 		}
