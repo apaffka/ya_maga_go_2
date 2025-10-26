@@ -318,7 +318,7 @@ var (
 )
 
 func validateContainer(file string, c *yaml.Node, errs *[]validationError) {
-	// name (required snake_case)
+	// name (required snake_case, non-empty)
 	nameNode, ok := getField(c, "name")
 	if !ok {
 		*errs = append(*errs, validationError{file, 0, "name is required"})
@@ -485,9 +485,7 @@ func validateResourceMap(file string, m *yaml.Node, errs *[]validationError) {
 
 	// cpu must be int
 	if cpuNode, ok := getField(m, "cpu"); ok {
-		if !expectScalarInt(file, "cpu", cpuNode, errs) {
-			// ошибка уже добавлена
-		}
+		expectScalarInt(file, "cpu", cpuNode, errs)
 	}
 
 	// memory must match ^[0-9]+(Gi|Mi|Ki)$
